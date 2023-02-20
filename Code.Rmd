@@ -1,0 +1,402 @@
+---
+title: "AIT_644 Final Project"
+author: "Sai Jaswanth Kumar Kunku"
+output: html_notebook
+---
+
+
+## Library
+```{r}
+library(tidyverse)
+library(skimr)
+library(ggcorrplot)
+library(psych)
+library(tidymodels)
+library(vip)
+```
+
+## Data Import
+```{r}
+df=read.csv("used_cars_data.csv")
+```
+
+## Data Preprocessing
+```{r}
+df<-df %>% separate(Name, c("Brand", "Model Name"),sep = " ",extra = "merge")
+df$Years_old= 2021-df$Year
+df$index <- 1:nrow(df)
+```
+
+## Data Cleaning
+```{r}
+#Removing Unwanted Columns
+
+df = dplyr::select(df, -c("New_Price","Year","Model Name"))
+#converting mileage field as Units of CNG and LPG are different
+#1 Kg. of CNG is energy equivalent to 1.39 liters of petrol and 1.18 liters of diesel.
+
+df <-df %>%
+  mutate(Mileage = case_when(str_detect(Mileage,"km/kg") ~ round(parse_number(Mileage)*1.39,2),
+                             TRUE ~ parse_number(Mileage)))
+#Removing Strings in numerical data
+
+df$Engine<-gsub("\\ .*|CC","",df$Engine)
+df$Power<-gsub("\\ .*|bhp|null","",df$Power)
+
+#Converting characters to numerical
+df$Engine <-as.numeric(df$Engine)
+df$Power <-as.numeric(df$Power)
+df$Mileage <-as.numeric(df$Mileage)
+df$Price <-as.numeric(df$Price)
+df$Brand <-as.factor(df$Brand)
+
+df$Seats <-as.character(df$Seats)
+#Filling Misssing Values
+
+colSums(is.na(df))
+find_mode <- function(x) {
+  u <- unique(x)
+  tab <- tabulate(match(x, u))
+  u[tab == max(tab)]
+}
+
+df <- df %>% 
+  group_by(Brand) %>% 
+  mutate(Price =replace_na(Price, median(Price, na.rm = TRUE))) %>% as.data.frame()
+
+df <- df %>% 
+  group_by(Brand) %>% 
+  mutate(Seats =replace_na(Seats, find_mode(df$Seats))) %>% as.data.frame()
+
+df$Engine[is.na(df$Engine)]<-mean(df$Engine,na.rm=TRUE)
+df$Power[is.na(df$Power)]<-mean(df$Power,na.rm=TRUE)
+df$Mileage[is.na(df$Mileage)]<-mean(df$Mileage,na.rm=TRUE)
+
+#Removing Duplicates
+sum(duplicated(df))
+df<-unique(df)
+
+skim(df)
+#write.csv(df,"cleaned_data.csv")
+```
+
+
+## EDA
+```{r}
+numeric_df<-Filter(is.numeric,df)
+#EDA
+boxrep = par(mfrow = c(2,3))
+for ( i in 1:6 ) {
+  boxplot(numeric_df[[i]],col='orange')
+  mtext(names(numeric_df)[i], cex = 0.8, side = 1, line = 2)
+  mtext("BoxPlot of Numeric Features", side = 3, line = -3, outer = TRUE)
+  
+}
+#Outlier Removal
+outlier1 <- boxplot(numeric_df$Kilometers_Driven, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Kilometers_Driven %in% outlier1),])
+
+
+outlier2 <- boxplot(numeric_df$Mileage, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Mileage %in% outlier2),])
+
+
+outlier3 <- boxplot(numeric_df$Engine, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Engine %in% outlier3),])
+
+outlier4 <- boxplot(numeric_df$Power, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Power %in% outlier4),])
+
+
+outlier5 <- boxplot(numeric_df$Price, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Price %in% outlier5),])
+
+outlier6 <- boxplot(numeric_df$Years_old, plot=FALSE)$out
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$Years_old %in% outlier6),])
+
+subset_df <- df[which(numeric_df$index %in% df$index) , ]
+subset_df = subset_df %>% dplyr::select(-c("index")) 
+subset_df <- as.data.frame(unclass(subset_df),stringsAsFactors=TRUE)
+#Heatmap
+num_df<-Filter(is.numeric,subset_df)
+
+ggcorrplot(cor(num_df), hc.order = TRUE, type = "lower",
+           lab = TRUE,digits = 2)+ 
+  labs(title = "HeatMap of Vehicle Characterstics")
+```
+
+
+```{r}
+#Pairs
+pairs.panels(num_df)
+```
+
+```{r}
+set.seed(3)
+sample=sample(1:nrow(subset_df),size=nrow(subset_df)*.7)
+train<-subset_df[sample,] #Select the 70% of rows
+test<-subset_df[-sample,] #Select the 30% of rows8
+fit2 = lm(Price~.,train)
+#fit3 <- lm(Life.expectancy ~Income.composition.of.resources,data=train)
+summary(fit2)
+```
+
+## Linear Regression
+```{r}
+set.seed(10)
+
+subset_df<-subset_df %>% dplyr::select(-c("Seats","Brand","Location"))  
+# Create a split object
+cars_split <- initial_split(subset_df, prop = 0.75,strata = Price)
+
+# Build training data set
+cars_training <- cars_split %>% training()
+
+# Build testing data set
+cars_test <- cars_split %>% testing()
+
+#Model
+
+lm_model <- linear_reg() %>% 
+            set_engine('lm') %>% # adds lm implementation of linear regression
+            set_mode('regression')
+
+
+
+# View object properties
+lm_model
+
+lm_fit <- lm_model %>% 
+          fit(Price ~ ., data = cars_training)
+
+# View lm_fit properties
+lm_fit
+
+lm_fit %>% 
+  # Extract fit element from the list
+  pluck('fit') %>% 
+  # Pass to summary function
+  summary()
+
+par(mfrow=c(2,2)) # plot all 4 plots in one
+
+lm_fit %>% 
+  pluck('fit') %>% 
+  plot(pch = 16,    # optional parameters to make points blue
+       col = '#006EA1')
+
+predict(lm_fit, new_data = cars_test)
+
+car_results <- predict(lm_fit, new_data = cars_test) %>% 
+                            bind_cols(cars_test)
+
+# View results
+car_results
+
+# RMSE on test set
+#rmse(car_results,  truth = Price,estimate = .pred)
+
+# R2 on test set
+#rsq(car_results,truth = Price,estimate = .pred)
+
+ggplot(data = car_results,
+       mapping = aes(x = .pred, y = Price)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, linetype = 2, color = 'red') +
+  coord_obs_pred() +
+  labs(title = 'Linear Regression Results - Car Data Test Set',
+       x = 'Predicted Price',
+       y = 'Actual Price') +
+  theme_light() +xlim(0,100)
+
+```
+
+## Linear Regression Workflow
+```{r}
+set.seed(314)
+
+
+# Create a split object
+cars_split <- initial_split(subset_df, prop = 0.75, 
+                                   strata = Price)
+
+# Build training data set
+cars_training <- cars_split %>% 
+                        training()
+
+# Build testing data set
+cars_test <- cars_split %>% 
+                    testing()
+
+
+#Feature Eng
+cars_recipe <- recipe(Price ~ ., data = cars_training) %>% 
+                      step_YeoJohnson(all_numeric(), -all_outcomes()) %>% 
+                      step_normalize(all_numeric(), -all_outcomes()) %>% 
+                      step_dummy(all_nominal(), - all_outcomes())
+
+cars_workflow <- workflow() %>% 
+                        add_model(lm_model) %>% 
+                        add_recipe(cars_recipe)
+
+cars_fit <- cars_workflow %>% 
+                   last_fit(split = cars_split)
+
+cars_fit %>% collect_metrics()
+
+pairs.panels(cars_training)
+
+
+cars_recipe %>% 
+  prep(training = cars_training) %>% 
+  bake(new_data = NULL) %>% view()
+```
+
+#KNN
+```{r}
+set.seed(314)
+folds <- vfold_cv(cars_training, v = 5)
+
+knn_reg <- nearest_neighbor(neighbors = tune()) %>% 
+            set_engine('kknn') %>% 
+            set_mode('regression')
+
+knn_reg_wf <- workflow() %>% 
+              add_model(knn_reg) %>% 
+              add_recipe(cars_recipe)
+
+k_grid_reg <- tibble(neighbors = c(10, 20, 30, 50, 75, 100, 125, 150))
+
+knn_reg_tuning <- knn_reg_wf %>% 
+                  tune_grid(resamples = folds,
+                            grid = k_grid_reg)
+
+knn_reg_tuning %>% show_best('rsq')
+
+best_k_reg <- knn_reg_tuning %>% 
+              select_best(metric = 'rsq')
+
+## View model
+best_k_reg
+
+final_knn_reg_wf <- knn_reg_wf %>% 
+                    finalize_workflow(best_k_reg)
+
+homes_knn_fit <- final_knn_reg_wf %>% 
+                 last_fit(split = cars_split)
+homes_knn_fit %>% collect_metrics()
+
+homes_knn_results <- homes_knn_fit %>% 
+                     collect_predictions()
+
+# View results
+homes_knn_results
+
+ggplot(data = homes_knn_results,
+       mapping = aes(x = .pred, y = Price)) +
+  geom_point(alpha = 0.25) +geom_point(color = '#006EA1') +
+  geom_abline(intercept = 0, slope = 1, color = 'red', linetype = 2) +
+  coord_obs_pred() +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(title = 'KNN Results - Car Data Test Set',
+       x = 'Predicted Price',
+       y = 'Actual Price')
+
+credit_logistic_fit <- cars_workflow %>% 
+                      fit(data = cars_training)
+
+credit_trained_model <- credit_logistic_fit %>% 
+                       extract_fit_parsnip()
+
+vip(credit_trained_model,mapping = aes_string(fill = "Variable[1]"))+ggtitle("Important Vehicle Features")
+
+# mapping = aes_string(fill = "Variable[1]"),aesthetics = list(color = "grey35", size = 0.8)
+```
+
+
+##Visualizations
+
+1.Which brands and type of vehicles are sold out most in the market?
+
+```{r}
+mode <- function(x) { names(which.max(table(x))) }
+
+df$Fuel_Type<-as.factor(df$Fuel_Type)
+
+df %>% group_by(Brand)  %>%  summarise(Majority_Fuel_Type = mode(Fuel_Type),avg_mileage=median(Mileage),count=n()) %>% arrange(desc(count))
+
+
+```
+
+
+
+
+Fuel type by Mileage
+```{r}
+
+df<-df[df$Mileage>0 & df$Fuel_Type!='Electric'& df$Seats!=0,] 
+
+ ggplot(df,aes(x=reorder(Fuel_Type, Mileage, FUN = median),
+                         y=Mileage,
+                         fill=Fuel_Type)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) +
+    labs(title = "Summary statistics of Mileage by Fuel Type", y = "Mileage",
+         x = "Fuel Type")
+
+```
+```{r}
+
+
+ggplot(df,aes(x=reorder(Brand, Price, FUN = median),
+                         y=Mileage,
+                         fill=Fuel_Type)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) + coord_flip()+
+    labs(title = "Summary statistics of Mileage by Fuel Type", y = "Mileage",
+         x = "Fuel Type")
+```
+```{r}
+library(plotly)
+
+fig <- plot_ly(data = df, x = ~Mileage, y = ~Power, color = ~Fuel_Type, colors = "Set1",opacity=0.6) %>% layout(title="Mileage vs Power")
+
+fig
+```
+```{r}
+df$Seats<-as.factor(df$Seats)
+levels(df$Seats) <- c(2,4,5,6,7,8,9,10)
+ ggplot(df,aes(x=Seats,
+                         y=Mileage,
+                         fill=Seats)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) +
+    labs(title = "Effect of Mileage on No: of Seats", y = "Mileage",
+         x = "Seating Capacity")
+
+```
+```{r}
+df$Years_old<-as.factor(df$Years_old)
+
+
+ggplot(data=df, aes(x=Brand, fill=Years_old)) +
+    geom_density(adjust=1.5, alpha=.4) +
+    facet_wrap(~Years_old)
+```
+
+```{r}
+outlier1 <- boxplot(df$Price, plot=FALSE)$out
+x<- as.data.frame(df[-which(df$Price %in% outlier1),])
+x$Owner_Type<-as.factor(x$Owner_Type)
+levels(x$Owner_Type) <- c("First","Second","Third","Fourth & Above")
+ggplot(x,aes(y=Price, x=Owner_Type,
+                         fill=Owner_Type)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16,
+                             size=1, show.legend=FALSE) +
+    labs(title = "Effect of Price on Owner Type", y = "Price",
+         x = "Owner Type")
+
+```
+
+
